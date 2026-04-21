@@ -1,8 +1,15 @@
 #!/bin/bash
-# Launch the desktop overlay
-# Run from project root: bash run_desktop.sh
+# Launch the Adaptive Suggestion Engine desktop overlay
+# Usage: bash run_desktop.sh  (from project root)
 
-export QT_QPA_PLATFORM_PLUGIN_PATH="$(python3 -c "import PyQt6, os; print(os.path.join(os.path.dirname(PyQt6.__file__), 'Qt6/plugins/platforms'))")"
+# Use Anaconda Python explicitly
+PYTHON=/opt/anaconda3/bin/python3
+
+# Find Qt platform plugins path from Anaconda's PyQt6
+export QT_QPA_PLATFORM_PLUGIN_PATH="$($PYTHON -c "import PyQt6, os; print(os.path.join(os.path.dirname(PyQt6.__file__), 'Qt6/plugins/platforms'))")"
+
+echo "[ASE] Qt plugin path: $QT_QPA_PLATFORM_PLUGIN_PATH"
+echo "[ASE] Starting overlay..."
 
 cd "$(dirname "$0")"
-python3 -m desktop.main
+$PYTHON -m desktop.main
