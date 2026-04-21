@@ -22,14 +22,17 @@ class App:
         ok = self._session.start()
         self._bridge.status_update.emit("Backend ✓" if ok else "Offline (Ollama direct)")
         self._transcriber = AudioTranscriber(
-            model_size="tiny",
+            model_size="base",           # handles accents far better than tiny
             on_utterance=self._on_utterance,
+            context=self._context,
         )
         self._transcriber.start()
         self._bridge.status_update.emit("Listening…")
 
     def _on_context_change(self, ctx: str):
         self._context = ctx
+        if self._transcriber:
+            self._transcriber.update_context(ctx)   # update prompt live, no restart needed
         if self._session:
             self._stop_audio()
             self._session = Session(self._context)
@@ -38,8 +41,9 @@ class App:
 
     def _start_audio(self):
         self._transcriber = AudioTranscriber(
-            model_size="tiny",
+            model_size="base",
             on_utterance=self._on_utterance,
+            context=self._context,
         )
         self._transcriber.start()
         self._bridge.status_update.emit("Listening…")
