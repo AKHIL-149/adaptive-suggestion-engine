@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard — Adaptive Suggestion Engine</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <nav>
+    <span class="logo">ASE <span class="tag">by Akhil</span></span>
+    <div class="nav-links">
+      <a href="/">Demo</a>
+      <a href="/dashboard" class="active">Dashboard</a>
+      <a href="https://github.com/AKHIL-149/adaptive-suggestion-engine" target="_blank">GitHub</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="hero" style="padding-bottom:0">
+      <h1>Learning <em>Dashboard</em></h1>
+      <p class="subtitle">How the model has improved based on your real outcomes.</p>
+    </section>
+
+    <!-- Metrics -->
+    <div class="metrics-grid" id="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Sessions</div>
+        <div class="metric-value" id="m-sessions">—</div>
+        <div class="metric-sub">completed</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Avg Score</div>
+        <div class="metric-value" id="m-score">—</div>
+        <div class="metric-sub">out of 5</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Acceptance Rate</div>
+        <div class="metric-value" id="m-accept">—</div>
+        <div class="metric-sub">suggestions used</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Best Style</div>
+        <div class="metric-value" id="m-best" style="font-size:18px;text-transform:capitalize">—</div>
+        <div class="metric-sub">top performing type</div>
+      </div>
+    </div>
+
+    <!-- Improvement curve -->
+    <div class="chart-wrap" id="chart-wrap">
+      <div class="chart-title">Outcome Score Over Time</div>
+      <div class="chart-bars" id="chart-bars">
+        <div class="empty-state">No completed sessions yet — run a few sessions to see your improvement curve.</div>
+      </div>
+    </div>
+
+    <!-- Patterns -->
+    <div class="card">
+      <h2>What Works for You</h2>
+      <p class="muted">Suggestion styles ranked by historical success rate.</p>
+      <div id="patterns-list">
+        <div class="empty-state">No patterns learned yet.</div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const userId = localStorage.getItem('ase_user_id');
+
+    async function load() {
+      if (!userId) return;
+      const [summary, improvement] = await Promise.all([
+        fetch(`/analytics/${userId}/summary`).then(r => r.json()),
+        fetch(`/analytics/${userId}/improvement`).then(r => r.json()),
+      ]);
+
+      document.getElementById('m-sessions').textContent = summary.completed_sessions ?? '0';
+      document.getElementById('m-score').textContent = summary.average_outcome_score ?? '—';
+      document.getElementById('m-accept').textContent =
+        summary.acceptance_rate != null ? `${Math.round(summary.acceptance_rate * 100)}%` : '—';
+      document.getElementById('m-best').textContent = summary.best_performing_style ?? '—';
+
+      // Chart
+      const curve = improvement.curve || [];
+      if (curve.length > 0) {
+        const bars = document.getElementById('chart-bars');
+        bars.innerHTML = curve.map(c => `
+          <div class="chart-bar-wrap">
+            <div class="chart-bar" style="height:${(c.score / 5) * 100}%" title="Score: ${c.score}"></div>
+            <div class="chart-bar-label">${c.score}</div>
+          </div>`).join('');
+      }
+
+      // Patterns
+      const patterns = summary.patterns || [];
+      if (patterns.length > 0) {
+        document.getElementById('patterns-list').innerHTML = patterns.map(p => `
+          <div class="pattern-row">
+            <span class="pattern-type">${p.suggestion_type}</span>
+            <div class="pattern-bar-wrap">
+              <div class="pattern-bar" style="width:${Math.round(p.success_rate * 100)}%"></div>
+            </div>
+            <span class="pattern-rate">${Math.round(p.success_rate * 100)}%</span>
+            <span class="pattern-count">${p.sample_count} sessions</span>
+          </div>`).join('');
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

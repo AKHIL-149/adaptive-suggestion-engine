@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Adaptive Suggestion Engine</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <nav>
+    <span class="logo">ASE <span class="tag">by Akhil</span></span>
+    <div class="nav-links">
+      <a href="/" class="active">Demo</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="https://github.com/AKHIL-149/adaptive-suggestion-engine" target="_blank">GitHub</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="hero">
+      <h1>AI that learns what <em>actually</em> works</h1>
+      <p class="subtitle">
+        Real-time suggestions for meetings & interviews — with a closed-loop
+        learning system that improves based on your actual outcomes.
+      </p>
+    </section>
+
+    <!-- Step 1: Setup -->
+    <div class="card" id="step-setup">
+      <div class="step-label">Step 1</div>
+      <h2>Start a Session</h2>
+      <div class="form-row">
+        <label>Context</label>
+        <select id="context-select">
+          <option value="software engineering interview">Software Engineering Interview</option>
+          <option value="product management interview">Product Management Interview</option>
+          <option value="sales meeting">Sales Meeting</option>
+          <option value="investor pitch">Investor Pitch</option>
+          <option value="performance review">Performance Review</option>
+          <option value="custom">Custom…</option>
+        </select>
+      </div>
+      <div class="form-row hidden" id="custom-context-row">
+        <label>Custom Context</label>
+        <input type="text" id="custom-context" placeholder="Describe the meeting or interview…" />
+      </div>
+      <button class="btn-primary" id="start-btn">Start Session</button>
+    </div>
+
+    <!-- Step 2: Get suggestions -->
+    <div class="card hidden" id="step-suggest">
+      <div class="step-label">Step 2</div>
+      <h2>Get Real-Time Suggestions</h2>
+      <div class="session-info">
+        <span id="session-context-badge"></span>
+        <span class="dot">·</span>
+        <span id="session-id-badge"></span>
+      </div>
+      <div class="form-row">
+        <label>Question / Prompt you received</label>
+        <textarea id="prompt-input" rows="3" placeholder="e.g. 'Tell me about a time you handled a difficult stakeholder…'"></textarea>
+      </div>
+      <button class="btn-primary" id="suggest-btn">Get Suggestions</button>
+
+      <div id="suggestions-area" class="hidden">
+        <div class="suggestions-header">
+          <span>Suggestions <span id="suggestion-type-badge" class="type-badge"></span></span>
+          <span class="predicted-note">Ranked by your historical success rate</span>
+        </div>
+        <div id="suggestions-list"></div>
+      </div>
+    </div>
+
+    <!-- Step 3: Submit outcome -->
+    <div class="card hidden" id="step-outcome">
+      <div class="step-label">Step 3</div>
+      <h2>How did it go?</h2>
+      <p class="muted">Your rating trains the model — next session's suggestions will be better.</p>
+      <div class="star-rating" id="star-rating">
+        <span class="star" data-v="1">★</span>
+        <span class="star" data-v="2">★</span>
+        <span class="star" data-v="3">★</span>
+        <span class="star" data-v="4">★</span>
+        <span class="star" data-v="5">★</span>
+      </div>
+      <div class="form-row">
+        <label>Notes (optional)</label>
+        <input type="text" id="outcome-notes" placeholder="What went well? What didn't?" />
+      </div>
+      <button class="btn-primary" id="outcome-btn">Submit & Learn</button>
+    </div>
+
+    <!-- Learning result -->
+    <div class="card hidden" id="step-learned">
+      <div class="learned-icon">🧠</div>
+      <h2>Model Updated</h2>
+      <p class="muted">Here's what the system learned from this session:</p>
+      <div id="learned-list"></div>
+      <div class="action-row">
+        <button class="btn-secondary" id="new-session-btn">New Session</button>
+        <a href="/dashboard" class="btn-primary">View Dashboard</a>
+      </div>
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
