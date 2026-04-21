@@ -11,6 +11,7 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QFrame,
+    QScrollArea, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QObject
 from PyQt6.QtGui import QColor
@@ -96,23 +97,33 @@ class SuggestionCard(QFrame):
                 border-radius: 8px;
             }}
         """)
+        # expand vertically to fit content — never clip
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 10, 12, 10)
-        lay.setSpacing(6)
+        lay.setSpacing(8)
 
-        # header
+        # header row
         h = QHBoxLayout()
-        h.addWidget(_label(f"#{rank}", 10, MUTED, bold=True))
+        rank_lbl = _label(f"#{rank}", 10, MUTED, bold=True)
+        rank_lbl.setFixedWidth(24)
+        h.addWidget(rank_lbl)
         h.addWidget(_label(item.get("angle", ""), 10, MUTED))
         h.addStretch()
         h.addWidget(_label(f"{pct}% match", 10, pct_color, bold=True))
         lay.addLayout(h)
 
-        # text
-        lay.addWidget(_label(item.get("text", ""), 13, TEXT))
+        # full suggestion text — word wrap, no height limit
+        text_lbl = QLabel(item.get("text", ""))
+        text_lbl.setWordWrap(True)
+        text_lbl.setStyleSheet(
+            f"color: {TEXT}; font-size: 13px; background: transparent; line-height: 1.5;")
+        text_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        text_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(text_lbl)
 
-        # use btn
+        # use button
         row = QHBoxLayout()
         row.addStretch()
         use = _btn("✓ Use this", SUCCESS)
@@ -142,7 +153,8 @@ class Overlay(QWidget):
             Qt.WindowType.Tool,
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedWidth(440)
+        self.setFixedWidth(460)
+        self.setFixedHeight(560)   # stable fixed height — no jumping when suggestions load
 
         self._build(on_context_change, on_refresh, on_end_session)
 
@@ -228,12 +240,35 @@ class Overlay(QWidget):
         sh.addWidget(ref)
         main.addLayout(sh)
 
-        self._sugg_area = QVBoxLayout()
-        self._sugg_area.setSpacing(6)
-        self._placeholder = _label(
-            "Suggestions appear when a question is detected.", 12, MUTED)
-        self._sugg_area.addWidget(self._placeholder)
-        main.addLayout(self._sugg_area)
+        # Scroll area — suggestions live inside here, fully readable
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet(f"""
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background: {BORDER}; width: 4px; border-radius: 2px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {MUTED}; border-radius: 2px; min-height: 20px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+        """)
+
+        self._sugg_container = QWidget()
+        self._sugg_container.setStyleSheet("background: transparent;")
+        self._sugg_area = QVBoxLayout(self._sugg_container)
+        self._sugg_area.setSpacing(8)
+        self._sugg_area.setContentsMargins(0, 0, 4, 0)
+        self._sugg_area.addStretch()
+
+        self._scroll.setWidget(self._sugg_container)
+        main.addWidget(self._scroll, stretch=1)   # takes all remaining vertical space
 
         main.addWidget(self._divider())
 
@@ -291,26 +326,29 @@ class Overlay(QWidget):
 
     def _on_loading(self):
         _, user_role = ROLE_MAP.get(self._context, ("SPEAKER", "YOUR RESPONSE"))
-        self._sugg_title.setText(f"SUGGESTIONS  ·  generating {user_role.lower()}…")
+        self._sugg_title.setText(f"SUGGESTIONS  ·  generating…")
         self._sugg_title.setStyleSheet(
             f"color: {WARN}; font-size: 9px; font-weight: 700; background: transparent;")
         self._clear_suggestions()
-        self._sugg_area.addWidget(_label("⏳  Thinking…", 12, WARN))
+        loading = _label("⏳  Thinking — first suggestion in ~3s…", 12, WARN)
+        self._sugg_area.insertWidget(0, loading)
 
     def _on_suggestions(self, items: list):
         _, user_role = ROLE_MAP.get(self._context, ("SPEAKER", "YOUR RESPONSE"))
-        self._sugg_title.setText(user_role)
+        count = len(items)
+        self._sugg_title.setText(f"{user_role}  ·  {count} suggestion{'s' if count != 1 else ''}")
         self._sugg_title.setStyleSheet(
             f"color: {SUCCESS}; font-size: 9px; font-weight: 700; background: transparent;")
         self._clear_suggestions()
         if not items:
-            self._sugg_area.addWidget(_label("No suggestions generated.", 12, MUTED))
+            self._sugg_area.insertWidget(0, _label("No suggestions generated.", 12, MUTED))
         else:
-            for i, item in enumerate(items[:3], 1):
-                card = SuggestionCard(i, item)
+            for i, item in enumerate(reversed(items[:3]), 1):
+                card = SuggestionCard(len(items) - i + 1, item)
                 card.used.connect(self._on_card_used)
-                self._sugg_area.addWidget(card)
-        self.adjustSize()
+                self._sugg_area.insertWidget(0, card)
+        # scroll to top so user sees #1 first
+        self._scroll.verticalScrollBar().setValue(0)
 
     def _on_card_used(self, sid: str):
         self._on_mark_used(sid)
@@ -322,7 +360,7 @@ class Overlay(QWidget):
             f"color: {SUCCESS if live else MUTED}; font-size: 11px; background: transparent;")
 
     def _clear_suggestions(self):
-        while self._sugg_area.count():
+        while self._sugg_area.count() > 1:   # keep the stretch at the end
             item = self._sugg_area.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
