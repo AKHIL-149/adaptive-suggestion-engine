@@ -21,9 +21,8 @@ class FeedbackRequest(BaseModel):
 
 @router.post("/")
 async def suggest(body: SuggestRequest):
-    if body.n < 1 or body.n > 5:
+    if not (1 <= body.n <= 5):
         raise HTTPException(400, "n must be between 1 and 5")
-
     suggestions = await generate_suggestions(
         user_id=body.user_id,
         session_id=body.session_id,
@@ -36,11 +35,5 @@ async def suggest(body: SuggestRequest):
 
 @router.post("/feedback")
 async def feedback(body: FeedbackRequest):
-    """Mark a suggestion as accepted or rejected — strengthens the learning signal."""
-    db = get_db()
-    rows = db.table("suggestions").select("id").eq("id", body.suggestion_id).execute().data
-    if not rows:
-        raise HTTPException(404, "Suggestion not found")
-
-    db.table("suggestions").update({"accepted": body.accepted}).eq("id", body.suggestion_id).execute()
+    get_db().mark_accepted(body.suggestion_id, body.accepted)
     return {"ok": True}
