@@ -13,8 +13,8 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QFrame,
     QScrollArea, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QObject
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QObject, QTimer
+from PyQt6.QtGui import QColor, QKeySequence, QShortcut
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG        = "rgba(10, 10, 20, 210)"
@@ -78,6 +78,8 @@ class Bridge(QObject):
     suggestions_ready = pyqtSignal(list)
     status_update     = pyqtSignal(str)
     loading_start     = pyqtSignal()
+    gesture_move      = pyqtSignal(int, int)    # dx, dy from gesture controller
+    gesture_finalize  = pyqtSignal()            # ✌️  lock position
 
 
 # ── Suggestion card ───────────────────────────────────────────────────────────
@@ -162,6 +164,12 @@ class Overlay(QWidget):
         bridge.suggestions_ready.connect(self._on_suggestions)
         bridge.status_update.connect(self._on_status)
         bridge.loading_start.connect(self._on_loading)
+        bridge.gesture_move.connect(self._gesture_move)
+        bridge.gesture_finalize.connect(self._gesture_finalize)
+
+        self._gesture_active = False
+        self._locked_pos: QPoint | None = None
+        self._setup_keyboard_shortcuts()
 
     # ── Build UI ──────────────────────────────────────────────────────────
 
@@ -193,6 +201,16 @@ class Overlay(QWidget):
         tb.addWidget(self._dot)
         tb.addWidget(self._status_lbl)
         tb.addStretch()
+
+        # gesture indicator — shown in title bar
+        self._gesture_lbl = QLabel("✋")
+        self._gesture_lbl.setStyleSheet(
+            f"color: {MUTED}; font-size: 13px; background: transparent;")
+        self._gesture_lbl.setToolTip(
+            "☝️ Index finger = move   ✌️ Two fingers = lock position\n"
+            "Keyboard: Shift+Arrow = move  (auto-locks on release)"
+        )
+        tb.addWidget(self._gesture_lbl)
 
         self._ctx_combo = QComboBox()
         self._ctx_combo.addItems(CONTEXTS)
@@ -375,15 +393,100 @@ class Overlay(QWidget):
     def get_score(self) -> int:
         return self._score
 
+    # ── Gesture control ───────────────────────────────────────────────────
+
+    def _gesture_move(self, dx: int, dy: int):
+        """Move window by (dx, dy) pixels — called from gesture controller."""
+        if self._locked_pos is not None:
+            return   # position is locked, ignore movement
+        new_pos = self.pos() + QPoint(dx, dy)
+        new_pos = self._clamp_to_screen(new_pos)
+        self.move(new_pos)
+        # show active indicator
+        self._gesture_lbl.setStyleSheet(
+            f"color: {SUCCESS}; font-size: 13px; background: transparent;")
+        self._gesture_active = True
+
+    def _gesture_finalize(self):
+        """Lock current position — ✌️ gesture or keyboard release."""
+        self._locked_pos = self.pos()
+        self._gesture_lbl.setStyleSheet(
+            f"color: {ACCENT}; font-size: 13px; background: transparent;")
+        self._gesture_lbl.setText("📌")
+        self._on_status("Position locked ✓")
+
+    def unlock_position(self):
+        """Allow movement again (call to re-enable dragging)."""
+        self._locked_pos = None
+        self._gesture_lbl.setText("✋")
+        self._gesture_lbl.setStyleSheet(
+            f"color: {MUTED}; font-size: 13px; background: transparent;")
+
+    # ── Keyboard shortcuts ────────────────────────────────────────────────
+
+    STEP_PX = 20   # pixels per key press
+
+    def _setup_keyboard_shortcuts(self):
+        """
+        Shift + Arrow keys move the window.
+        Position is auto-finalized 1 second after last key press.
+        """
+        self._kbd_timer = QTimer(self)
+        self._kbd_timer.setSingleShot(True)
+        self._kbd_timer.timeout.connect(self._kbd_finalize)
+
+        moves = {
+            "Shift+Left":  (-self.STEP_PX, 0),
+            "Shift+Right": ( self.STEP_PX, 0),
+            "Shift+Up":    (0, -self.STEP_PX),
+            "Shift+Down":  (0,  self.STEP_PX),
+        }
+        for key, (dx, dy) in moves.items():
+            sc = QShortcut(QKeySequence(key), self)
+            sc.activated.connect(lambda dx=dx, dy=dy: self._kbd_move(dx, dy))
+
+    def _kbd_move(self, dx: int, dy: int):
+        self._locked_pos = None   # temporarily unlock during keyboard move
+        new_pos = self.pos() + QPoint(dx, dy)
+        self.move(self._clamp_to_screen(new_pos))
+        self._gesture_lbl.setText("⌨️")
+        self._gesture_lbl.setStyleSheet(
+            f"color: {WARN}; font-size: 13px; background: transparent;")
+        # auto-finalize 1s after last key press
+        self._kbd_timer.start(1000)
+
+    def _kbd_finalize(self):
+        self._gesture_finalize()
+        self._gesture_lbl.setText("📌")
+
+    # ── Screen boundary clamp ─────────────────────────────────────────────
+
+    def _clamp_to_screen(self, pos: QPoint) -> QPoint:
+        screen = QApplication.primaryScreen().availableGeometry()
+        x = max(screen.left(), min(pos.x(), screen.right()  - self.width()))
+        y = max(screen.top(),  min(pos.y(), screen.bottom() - self.height()))
+        return QPoint(x, y)
+
     # ── Drag ──────────────────────────────────────────────────────────────
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            if self._locked_pos is None:
+                self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            else:
+                # double-click title area to unlock
+                self._drag_pos = None
+
+    def mouseDoubleClickEvent(self, e):
+        """Double-click anywhere to unlock a locked position."""
+        if self._locked_pos is not None:
+            self.unlock_position()
+            self._on_status("Position unlocked — move freely")
 
     def mouseMoveEvent(self, e):
         if self._drag_pos and e.buttons() == Qt.MouseButton.LeftButton:
-            self.move(e.globalPosition().toPoint() - self._drag_pos)
+            self.move(self._clamp_to_screen(
+                e.globalPosition().toPoint() - self._drag_pos))
 
     def mouseReleaseEvent(self, e):
         self._drag_pos = None
