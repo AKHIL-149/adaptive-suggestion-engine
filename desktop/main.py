@@ -78,8 +78,14 @@ class App:
     def _fetch_suggestions(self, prompt: str):
         if not self._session:
             return
-        items = self._session.get_suggestions(prompt, n=3)
-        self._bridge.suggestions_ready.emit(items)
+        # on_partial fires after each suggestion → UI updates progressively
+        def on_partial(partial_items: list):
+            self._bridge.suggestions_ready.emit(partial_items)
+
+        items = self._session.get_suggestions(prompt, n=3, on_partial=on_partial)
+        # final emit ensures UI is up to date even if backend returned all at once
+        if items:
+            self._bridge.suggestions_ready.emit(items)
         self._bridge.status_update.emit("Listening…")
 
     def _on_refresh(self):

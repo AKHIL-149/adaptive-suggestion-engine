@@ -32,7 +32,7 @@ CHUNK_MS      = 100
 CHUNK_FRAMES  = SAMPLE_RATE * CHUNK_MS // 1000   # 1600 frames per chunk
 
 # VAD — tuned for accented / soft-spoken speakers
-SILENCE_CHUNKS    = 18      # ~1.8s silence → utterance done (more time for accented speech)
+SILENCE_CHUNKS    = 10      # ~1.0s silence → faster trigger (was 1.8s)
 MIN_SPEECH_CHUNKS = 4       # ~400ms minimum utterance to avoid noise
 NOISE_FLOOR_CHUNKS = 30     # first 3s used to calibrate noise floor
 
@@ -184,16 +184,16 @@ class AudioTranscriber:
 
             segments, info = self._model.transcribe(
                 audio,
-                beam_size=5,                       # more candidates → better on accents
-                language=None,                     # auto-detect (not forced English)
-                initial_prompt=prompt,             # domain context helps with vocabulary
+                beam_size=3,                       # 3 = sweet spot: faster than 5, still accent-robust
+                language=None,                     # auto-detect
+                initial_prompt=prompt,             # domain context
                 vad_filter=True,
                 vad_parameters={
-                    "min_silence_duration_ms": 400,
-                    "speech_pad_ms": 200,          # pad edges so words aren't clipped
+                    "min_silence_duration_ms": 300,
+                    "speech_pad_ms": 100,
                 },
-                condition_on_previous_text=False,  # each utterance decoded independently
-                temperature=[0.0, 0.2, 0.4],      # fallback temperatures for hard audio
+                condition_on_previous_text=False,
+                temperature=0.0,                   # single pass — faster than fallback chain
                 compression_ratio_threshold=2.4,
                 log_prob_threshold=-1.0,
                 no_speech_threshold=0.5,
