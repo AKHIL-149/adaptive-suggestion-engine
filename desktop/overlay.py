@@ -1,42 +1,31 @@
 """
-PyQt6 always-on-top transparent overlay.
+PyQt6 always-on-top transparent overlay — Cluely-style.
 
-Layout:
-  ┌──────────────────────────────────────┐
-  │  ● LIVE   [Context ▼]   [_][×]       │  ← title bar (drag here)
-  ├──────────────────────────────────────┤
-  │  TRANSCRIPT                           │
-  │  "Tell me about a time you..."        │
-  ├──────────────────────────────────────┤
-  │  SUGGESTIONS          [⟳ Refresh]    │
-  │  ┌────────────────────────────────┐  │
-  │  │ #1  ████████░░  82%            │  │
-  │  │ "In my previous role..."       │  │
-  │  │                  [✓ Use this]  │  │
-  │  └────────────────────────────────┘  │
-  ├──────────────────────────────────────┤
-  │  [⏹ End]   ★☆☆☆☆  [Submit]          │
-  └──────────────────────────────────────┘
+Role-aware UI:
+  - INTERVIEWER label when a question is detected (other person speaking)
+  - YOUR RESPONSE label when suggestions appear
+  - Thin, semi-transparent like Cluely
 """
 from __future__ import annotations
 
-import threading
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QComboBox, QScrollArea, QFrame, QSizePolicy,
+    QLabel, QPushButton, QComboBox, QFrame,
 )
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QObject
-from PyQt6.QtGui import QColor, QPalette, QFont, QCursor
+from PyQt6.QtGui import QColor
 
-# ── Colour palette (matches web app) ─────────────────────────────────────────
-BG          = "#0d0d14"
-SURFACE     = "#13131a"
-BORDER      = "#1e1e2e"
-ACCENT      = "#6c63ff"
-MUTED       = "#6b6b80"
-SUCCESS     = "#22c55e"
-TEXT        = "#e8e8f0"
-WARN        = "#f59e0b"
+# ── Palette ───────────────────────────────────────────────────────────────────
+BG        = "rgba(10, 10, 20, 210)"
+SURFACE   = "rgba(15, 15, 25, 220)"
+BORDER    = "#1e1e2e"
+ACCENT    = "#6c63ff"
+MUTED     = "#6b6b80"
+SUCCESS   = "#22c55e"
+TEXT      = "#e8e8f0"
+WARN      = "#f59e0b"
+INTER_CLR = "#60a5fa"   # blue  — interviewer / client / investor
+USER_CLR  = "#a78bfa"   # purple — candidate / salesperson / founder
 
 CONTEXTS = [
     "Software Engineering Interview",
@@ -47,16 +36,26 @@ CONTEXTS = [
     "General Meeting",
 ]
 
+# Maps context → (other_role, user_role)
+ROLE_MAP = {
+    "Software Engineering Interview": ("INTERVIEWER", "YOUR RESPONSE"),
+    "Product Management Interview":   ("INTERVIEWER", "YOUR RESPONSE"),
+    "Sales Meeting":                  ("CLIENT",      "YOUR PITCH"),
+    "Investor Pitch":                 ("INVESTOR",    "YOUR PITCH"),
+    "Performance Review":             ("MANAGER",     "YOUR RESPONSE"),
+    "General Meeting":                ("SPEAKER",     "YOUR RESPONSE"),
+}
 
-def _btn(text: str, color: str = ACCENT, fg: str = "#ffffff") -> QPushButton:
+
+def _btn(text: str, bg: str = ACCENT, fg: str = "#fff") -> QPushButton:
     b = QPushButton(text)
     b.setStyleSheet(f"""
         QPushButton {{
-            background: {color}; color: {fg};
+            background: {bg}; color: {fg};
             border: none; border-radius: 6px;
             padding: 6px 14px; font-size: 12px; font-weight: 600;
         }}
-        QPushButton:hover {{ opacity: 0.8; }}
+        QPushButton:hover {{ background: {bg}; opacity: 0.85; }}
         QPushButton:disabled {{ background: {BORDER}; color: {MUTED}; }}
     """)
     return b
@@ -64,258 +63,289 @@ def _btn(text: str, color: str = ACCENT, fg: str = "#ffffff") -> QPushButton:
 
 def _label(text: str, size: int = 12, color: str = TEXT, bold: bool = False) -> QLabel:
     lb = QLabel(text)
-    lb.setStyleSheet(f"color: {color}; font-size: {size}px; font-weight: {'700' if bold else '400'};")
+    lb.setStyleSheet(
+        f"color: {color}; font-size: {size}px; font-weight: {'700' if bold else '400'};"
+        " background: transparent;"
+    )
     lb.setWordWrap(True)
     return lb
 
 
-# ── Signal bridge (thread → UI) ───────────────────────────────────────────────
+# ── Signal bridge ─────────────────────────────────────────────────────────────
 class Bridge(QObject):
-    transcript_ready  = pyqtSignal(str)
+    transcript_ready  = pyqtSignal(str, bool)   # text, is_question
     suggestions_ready = pyqtSignal(list)
     status_update     = pyqtSignal(str)
+    loading_start     = pyqtSignal()
 
 
-# ── Suggestion card widget ────────────────────────────────────────────────────
+# ── Suggestion card ───────────────────────────────────────────────────────────
 class SuggestionCard(QFrame):
-    used = pyqtSignal(str)   # emits suggestion_id
+    used = pyqtSignal(str)
 
     def __init__(self, rank: int, item: dict):
         super().__init__()
         self._id = item.get("id", "")
         pct = int(item.get("predicted_success", 0.5) * 100)
+        pct_color = SUCCESS if pct >= 60 else (WARN if pct >= 40 else MUTED)
 
         self.setStyleSheet(f"""
             QFrame {{
-                background: {BG}; border: 1px solid {BORDER};
-                border-radius: 8px; padding: 10px;
+                background: rgba(20, 20, 35, 200);
+                border: 1px solid {BORDER};
+                border-radius: 8px;
             }}
         """)
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(6)
-        layout.setContentsMargins(10, 10, 10, 10)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(6)
 
-        # header row
-        header = QHBoxLayout()
-        header.addWidget(_label(f"#{rank}", 11, MUTED, bold=True))
-        header.addWidget(_label(item.get("angle", ""), 11, MUTED))
-        header.addStretch()
-        pct_color = SUCCESS if pct >= 60 else (WARN if pct >= 40 else MUTED)
-        header.addWidget(_label(f"{pct}% success", 11, pct_color, bold=True))
-        layout.addLayout(header)
+        # header
+        h = QHBoxLayout()
+        h.addWidget(_label(f"#{rank}", 10, MUTED, bold=True))
+        h.addWidget(_label(item.get("angle", ""), 10, MUTED))
+        h.addStretch()
+        h.addWidget(_label(f"{pct}% match", 10, pct_color, bold=True))
+        lay.addLayout(h)
 
-        # suggestion text
-        layout.addWidget(_label(item.get("text", ""), 13, TEXT))
+        # text
+        lay.addWidget(_label(item.get("text", ""), 13, TEXT))
 
-        # use button
+        # use btn
         row = QHBoxLayout()
         row.addStretch()
-        use_btn = _btn("✓ Use this", SUCCESS)
-        use_btn.clicked.connect(self._on_use)
-        row.addWidget(use_btn)
-        layout.addLayout(row)
+        use = _btn("✓ Use this", SUCCESS)
+        use.clicked.connect(self._use)
+        row.addWidget(use)
+        lay.addLayout(row)
 
-    def _on_use(self):
+    def _use(self):
         self.setStyleSheet(self.styleSheet().replace(BORDER, SUCCESS))
         self.used.emit(self._id)
 
 
-# ── Main overlay window ───────────────────────────────────────────────────────
+# ── Main overlay ──────────────────────────────────────────────────────────────
 class Overlay(QWidget):
-    def __init__(self, bridge: Bridge, on_context_change, on_refresh, on_end_session, on_mark_used):
+    def __init__(self, bridge: Bridge, on_context_change, on_refresh,
+                 on_end_session, on_mark_used):
         super().__init__()
         self._drag_pos: QPoint | None = None
-        self.bridge = bridge
         self._stars: list[QLabel] = []
-        self._selected_score = 0
+        self._score = 0
+        self._context = CONTEXTS[0]
+        self._on_mark_used = on_mark_used
 
-        self.setWindowTitle("ASE")
         self.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.Tool,
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedWidth(420)
-        self.setMinimumHeight(200)
+        self.setFixedWidth(440)
 
-        self._build_ui(on_context_change, on_refresh, on_end_session, on_mark_used)
+        self._build(on_context_change, on_refresh, on_end_session)
 
-        bridge.transcript_ready.connect(self._show_transcript)
-        bridge.suggestions_ready.connect(self._show_suggestions)
-        bridge.status_update.connect(self._show_status)
+        bridge.transcript_ready.connect(self._on_transcript)
+        bridge.suggestions_ready.connect(self._on_suggestions)
+        bridge.status_update.connect(self._on_status)
+        bridge.loading_start.connect(self._on_loading)
 
-    # ── UI construction ───────────────────────────────────────────────────
+    # ── Build UI ──────────────────────────────────────────────────────────
 
-    def _build_ui(self, on_context_change, on_refresh, on_end_session, on_mark_used):
-        self._on_mark_used = on_mark_used
+    def _build(self, on_ctx, on_refresh, on_end):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
 
-        container = QWidget()
-        container.setStyleSheet(f"""
-            QWidget {{
+        # outer container — thin, glassy
+        self._container = QWidget()
+        self._container.setStyleSheet(f"""
+            QWidget#container {{
                 background: {SURFACE};
                 border: 1px solid {BORDER};
-                border-radius: 12px;
+                border-radius: 14px;
             }}
         """)
-        root.addWidget(container)
+        self._container.setObjectName("container")
+        root.addWidget(self._container)
 
-        main = QVBoxLayout(container)
-        main.setContentsMargins(16, 12, 16, 16)
-        main.setSpacing(12)
+        main = QVBoxLayout(self._container)
+        main.setContentsMargins(14, 10, 14, 14)
+        main.setSpacing(10)
 
         # ── Title bar ─────────────────────────────────────────────────────
-        title_row = QHBoxLayout()
+        tb = QHBoxLayout()
+        self._dot = QLabel("●")
+        self._dot.setStyleSheet(f"color: {MUTED}; font-size: 11px; background: transparent;")
+        self._status_lbl = _label("Starting…", 11, MUTED)
+        tb.addWidget(self._dot)
+        tb.addWidget(self._status_lbl)
+        tb.addStretch()
 
-        self._status_dot = QLabel("●")
-        self._status_dot.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
-        title_row.addWidget(self._status_dot)
-
-        self._status_label = _label("Ready", 11, MUTED)
-        title_row.addWidget(self._status_label)
-        title_row.addStretch()
-
-        ctx = QComboBox()
-        ctx.addItems(CONTEXTS)
-        ctx.setStyleSheet(f"""
+        self._ctx_combo = QComboBox()
+        self._ctx_combo.addItems(CONTEXTS)
+        self._ctx_combo.setStyleSheet(f"""
             QComboBox {{
-                background: {BG}; color: {TEXT}; border: 1px solid {BORDER};
-                border-radius: 5px; padding: 3px 8px; font-size: 11px;
+                background: rgba(20,20,35,180); color: {TEXT};
+                border: 1px solid {BORDER}; border-radius: 5px;
+                padding: 3px 8px; font-size: 11px; min-width: 180px;
             }}
-            QComboBox::drop-down {{ border: none; }}
+            QComboBox::drop-down {{ border: none; width: 16px; }}
             QComboBox QAbstractItemView {{
-                background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER};
+                background: #0d0d1a; color: {TEXT}; border: 1px solid {BORDER};
             }}
         """)
-        ctx.currentTextChanged.connect(on_context_change)
-        title_row.addWidget(ctx)
+        self._ctx_combo.currentTextChanged.connect(self._ctx_changed(on_ctx))
+        tb.addWidget(self._ctx_combo)
 
-        close_btn = QPushButton("×")
-        close_btn.setFixedSize(22, 22)
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent; color: {MUTED}; border: none;
-                font-size: 16px; font-weight: bold;
-            }}
-            QPushButton:hover {{ color: #ff5555; }}
-        """)
-        close_btn.clicked.connect(self.close)
-        title_row.addWidget(close_btn)
-        main.addLayout(title_row)
+        x = QPushButton("×")
+        x.setFixedSize(20, 20)
+        x.setStyleSheet(f"background: transparent; color: {MUTED}; border: none; font-size: 15px; font-weight: bold;")
+        x.clicked.connect(self.close)
+        tb.addWidget(x)
+        main.addLayout(tb)
 
-        # ── Divider ───────────────────────────────────────────────────────
         main.addWidget(self._divider())
 
-        # ── Transcript section ────────────────────────────────────────────
-        main.addWidget(_label("TRANSCRIPT", 10, ACCENT, bold=True))
-        self._transcript = _label("Listening… speak to capture.", 13, MUTED)
-        self._transcript.setMinimumHeight(40)
+        # ── Transcript ────────────────────────────────────────────────────
+        self._speaker_lbl = _label("LISTENING…", 9, MUTED, bold=True)
+        main.addWidget(self._speaker_lbl)
+
+        self._transcript = _label("Speak — your mic is live.", 13, MUTED)
+        self._transcript.setMinimumHeight(36)
         main.addWidget(self._transcript)
 
         main.addWidget(self._divider())
 
-        # ── Suggestions section ───────────────────────────────────────────
-        s_header = QHBoxLayout()
-        s_header.addWidget(_label("SUGGESTIONS", 10, ACCENT, bold=True))
-        s_header.addStretch()
-        refresh = _btn("⟳ Refresh", BG, MUTED)
-        refresh.clicked.connect(on_refresh)
-        s_header.addWidget(refresh)
-        main.addLayout(s_header)
+        # ── Suggestions ───────────────────────────────────────────────────
+        sh = QHBoxLayout()
+        self._sugg_title = _label("SUGGESTIONS", 9, ACCENT, bold=True)
+        sh.addWidget(self._sugg_title)
+        sh.addStretch()
+        ref = _btn("⟳", "transparent", MUTED)
+        ref.setFixedSize(28, 22)
+        ref.clicked.connect(on_refresh)
+        sh.addWidget(ref)
+        main.addLayout(sh)
 
-        self._suggestions_area = QVBoxLayout()
-        self._suggestions_area.setSpacing(8)
-        self._no_suggestions = _label("Suggestions will appear when a question is detected.", 12, MUTED)
-        self._suggestions_area.addWidget(self._no_suggestions)
-        main.addLayout(self._suggestions_area)
+        self._sugg_area = QVBoxLayout()
+        self._sugg_area.setSpacing(6)
+        self._placeholder = _label(
+            "Suggestions appear when a question is detected.", 12, MUTED)
+        self._sugg_area.addWidget(self._placeholder)
+        main.addLayout(self._sugg_area)
 
         main.addWidget(self._divider())
 
-        # ── Outcome row ───────────────────────────────────────────────────
-        outcome_row = QHBoxLayout()
-        end_btn = _btn("⏹ End", "#ff5555")
-        end_btn.clicked.connect(on_end_session)
-        outcome_row.addWidget(end_btn)
+        # ── Outcome ───────────────────────────────────────────────────────
+        out = QHBoxLayout()
+        end = _btn("⏹ End", "#cc3333")
+        end.clicked.connect(on_end)
+        out.addWidget(end)
+        out.addStretch()
+        out.addWidget(_label("Rate:", 11, MUTED))
 
-        outcome_row.addStretch()
-        outcome_row.addWidget(_label("Rate:", 11, MUTED))
         for i in range(1, 6):
-            star = QLabel("★")
-            star.setStyleSheet(f"color: {BORDER}; font-size: 18px; cursor: pointer;")
-            star.mousePressEvent = lambda _, v=i: self._rate(v)
-            self._stars.append(star)
-            outcome_row.addWidget(star)
+            s = QLabel("★")
+            s.setStyleSheet(f"color: {BORDER}; font-size: 18px; background: transparent;")
+            s.mousePressEvent = lambda _, v=i: self._rate(v)
+            self._stars.append(s)
+            out.addWidget(s)
 
-        self._submit_btn = _btn("Submit", ACCENT)
-        self._submit_btn.setEnabled(False)
-        self._submit_btn.clicked.connect(on_end_session)
-        outcome_row.addWidget(self._submit_btn)
-        main.addLayout(outcome_row)
+        self._submit = _btn("Submit", ACCENT)
+        self._submit.setEnabled(False)
+        self._submit.clicked.connect(on_end)
+        out.addWidget(self._submit)
+        main.addLayout(out)
+
+    def _ctx_changed(self, cb):
+        def handler(text):
+            self._context = text
+            cb(text)
+        return handler
 
     def _divider(self) -> QFrame:
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet(f"color: {BORDER}; background: {BORDER};")
-        line.setFixedHeight(1)
-        return line
+        f = QFrame()
+        f.setFrameShape(QFrame.Shape.HLine)
+        f.setStyleSheet(f"background: {BORDER}; border: none;")
+        f.setFixedHeight(1)
+        return f
 
     # ── Slots ─────────────────────────────────────────────────────────────
 
-    def _show_transcript(self, text: str):
+    def _on_transcript(self, text: str, is_q: bool):
+        other_role, _ = ROLE_MAP.get(self._context, ("SPEAKER", "YOUR RESPONSE"))
+        if is_q:
+            self._speaker_lbl.setStyleSheet(
+                f"color: {INTER_CLR}; font-size: 9px; font-weight: 700; background: transparent;")
+            self._speaker_lbl.setText(f"▶ {other_role}")
+            self._transcript.setStyleSheet(
+                f"color: {TEXT}; font-size: 13px; background: transparent;")
+        else:
+            self._speaker_lbl.setStyleSheet(
+                f"color: {MUTED}; font-size: 9px; font-weight: 700; background: transparent;")
+            self._speaker_lbl.setText("▶ YOU (heard)")
+            self._transcript.setStyleSheet(
+                f"color: {MUTED}; font-size: 13px; background: transparent;")
         self._transcript.setText(text)
-        self._transcript.setStyleSheet(f"color: {TEXT}; font-size: 13px;")
 
-    def _show_suggestions(self, items: list):
-        # clear old cards
-        while self._suggestions_area.count():
-            w = self._suggestions_area.takeAt(0)
-            if w.widget():
-                w.widget().deleteLater()
+    def _on_loading(self):
+        _, user_role = ROLE_MAP.get(self._context, ("SPEAKER", "YOUR RESPONSE"))
+        self._sugg_title.setText(f"SUGGESTIONS  ·  generating {user_role.lower()}…")
+        self._sugg_title.setStyleSheet(
+            f"color: {WARN}; font-size: 9px; font-weight: 700; background: transparent;")
+        self._clear_suggestions()
+        self._sugg_area.addWidget(_label("⏳  Thinking…", 12, WARN))
 
+    def _on_suggestions(self, items: list):
+        _, user_role = ROLE_MAP.get(self._context, ("SPEAKER", "YOUR RESPONSE"))
+        self._sugg_title.setText(user_role)
+        self._sugg_title.setStyleSheet(
+            f"color: {SUCCESS}; font-size: 9px; font-weight: 700; background: transparent;")
+        self._clear_suggestions()
         if not items:
-            self._suggestions_area.addWidget(
-                _label("No suggestions generated.", 12, MUTED))
-            return
-
-        for i, item in enumerate(items[:3], 1):
-            card = SuggestionCard(i, item)
-            card.used.connect(self._on_card_used)
-            self._suggestions_area.addWidget(card)
-
+            self._sugg_area.addWidget(_label("No suggestions generated.", 12, MUTED))
+        else:
+            for i, item in enumerate(items[:3], 1):
+                card = SuggestionCard(i, item)
+                card.used.connect(self._on_card_used)
+                self._sugg_area.addWidget(card)
         self.adjustSize()
 
-    def _on_card_used(self, suggestion_id: str):
-        self._on_mark_used(suggestion_id)
+    def _on_card_used(self, sid: str):
+        self._on_mark_used(sid)
 
-    def _show_status(self, text: str):
-        self._status_label.setText(text)
-        is_live = text.lower() in ("listening…", "transcribing…", "thinking…")
-        self._status_dot.setStyleSheet(
-            f"color: {SUCCESS if is_live else MUTED}; font-size: 12px;")
+    def _on_status(self, text: str):
+        self._status_lbl.setText(text)
+        live = text.lower() in ("listening…", "transcribing…", "thinking…")
+        self._dot.setStyleSheet(
+            f"color: {SUCCESS if live else MUTED}; font-size: 11px; background: transparent;")
 
-    def _rate(self, value: int):
-        self._selected_score = value
-        for i, star in enumerate(self._stars):
-            star.setStyleSheet(
-                f"color: {WARN if i < value else BORDER}; font-size: 18px;")
-        self._submit_btn.setEnabled(True)
+    def _clear_suggestions(self):
+        while self._sugg_area.count():
+            item = self._sugg_area.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _rate(self, v: int):
+        self._score = v
+        for i, s in enumerate(self._stars):
+            s.setStyleSheet(
+                f"color: {WARN if i < v else BORDER}; font-size: 18px; background: transparent;")
+        self._submit.setEnabled(True)
 
     def get_score(self) -> int:
-        return self._selected_score
+        return self._score
 
-    # ── Draggable window ──────────────────────────────────────────────────
+    # ── Drag ──────────────────────────────────────────────────────────────
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
-    def mouseMoveEvent(self, event):
-        if self._drag_pos and event.buttons() == Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
+    def mouseMoveEvent(self, e):
+        if self._drag_pos and e.buttons() == Qt.MouseButton.LeftButton:
+            self.move(e.globalPosition().toPoint() - self._drag_pos)
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, e):
         self._drag_pos = None

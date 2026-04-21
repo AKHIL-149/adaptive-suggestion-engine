@@ -1,19 +1,3 @@
-"""
-Adaptive Suggestion Engine — Desktop App
-=========================================
-Run: python3 -m desktop.main  (from project root)
-
-Flow:
-  1. Overlay opens → user picks context → session starts
-  2. Mic captures audio continuously
-  3. When someone finishes speaking (silence > 1.2s):
-       a. Whisper transcribes the utterance
-       b. Question detector checks if it's a question
-       c. If yes → Ollama generates suggestions via API
-       d. Suggestions appear in the overlay, ranked by your history
-  4. User clicks "Use this" on a suggestion → marks it accepted
-  5. User rates outcome 1–5 → learning loop updates patterns
-"""
 from __future__ import annotations
 
 import sys
@@ -33,14 +17,10 @@ class App:
         self._bridge = Bridge()
         self._transcriber: AudioTranscriber | None = None
 
-    # ── Session lifecycle ─────────────────────────────────────────────────
-
     def _start_session(self):
         self._session = Session(self._context)
         ok = self._session.start()
-        status = "Backend connected ✓" if ok else "Offline mode (Ollama direct)"
-        self._bridge.status_update.emit(status)
-
+        self._bridge.status_update.emit("Backend ✓" if ok else "Offline (Ollama direct)")
         self._transcriber = AudioTranscriber(
             model_size="tiny",
             on_utterance=self._on_utterance,
@@ -51,18 +31,37 @@ class App:
     def _on_context_change(self, ctx: str):
         self._context = ctx
         if self._session:
-            # restart session with new context
-            self._stop_session(score=0)
-            self._start_session()
+            self._stop_audio()
+            self._session = Session(self._context)
+            self._session.start()
+            self._start_audio()
 
-    # ── Audio → suggestion pipeline ───────────────────────────────────────
+    def _start_audio(self):
+        self._transcriber = AudioTranscriber(
+            model_size="tiny",
+            on_utterance=self._on_utterance,
+        )
+        self._transcriber.start()
+        self._bridge.status_update.emit("Listening…")
+
+    def _stop_audio(self):
+        if self._transcriber:
+            self._transcriber.stop()
+            self._transcriber = None
+
+    # ── Core pipeline ─────────────────────────────────────────────────────
 
     def _on_utterance(self, text: str):
-        """Called from background thread when Whisper finishes a segment."""
+        """Called from Whisper background thread on completed utterance."""
         self._last_transcript = text
-        self._bridge.transcript_ready.emit(text)
+        iq = is_question(text)
 
-        if is_question(text):
+        # update transcript with role label
+        self._bridge.transcript_ready.emit(text, iq)
+
+        if iq:
+            # show loading spinner IMMEDIATELY — before Ollama responds
+            self._bridge.loading_start.emit()
             self._bridge.status_update.emit("Thinking…")
             threading.Thread(
                 target=self._fetch_suggestions,
@@ -81,6 +80,7 @@ class App:
 
     def _on_refresh(self):
         if self._last_transcript and self._session:
+            self._bridge.loading_start.emit()
             self._bridge.status_update.emit("Thinking…")
             threading.Thread(
                 target=self._fetch_suggestions,
@@ -96,30 +96,20 @@ class App:
                 daemon=True,
             ).start()
 
-    # ── Outcome + cleanup ─────────────────────────────────────────────────
-
     def _on_end_session(self):
         score = self._overlay.get_score()
         if score == 0:
             self._bridge.status_update.emit("Rate 1–5 first, then Submit.")
             return
-        self._stop_session(score)
-
-    def _stop_session(self, score: int):
-        if self._transcriber:
-            self._transcriber.stop()
-            self._transcriber = None
-        if self._session and score > 0:
+        self._stop_audio()
+        if self._session:
             result = self._session.end(score)
             learned = result.get("learning", {}).get("learned", [])
             if learned:
                 best = max(learned, key=lambda x: x["new_rate"])
                 self._bridge.status_update.emit(
-                    f"Learned: {best['type']} → {int(best['new_rate']*100)}% ✓"
-                )
+                    f"Learned: {best['type']} → {int(best['new_rate']*100)}% ✓")
         self._session = None
-
-    # ── Entry point ───────────────────────────────────────────────────────
 
     def run(self):
         qt_app = QApplication(sys.argv)
@@ -133,10 +123,7 @@ class App:
             on_mark_used=self._on_mark_used,
         )
         self._overlay.show()
-
-        # Start session after UI is shown
         threading.Thread(target=self._start_session, daemon=True).start()
-
         sys.exit(qt_app.exec())
 
 
